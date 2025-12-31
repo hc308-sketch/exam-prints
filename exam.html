@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>印卷加五制度管理系統 - 雲端導出版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+    <style>
+        body {
+            background-color: #f3f4f6;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .line-green { background-color: #06C755; }
+        .progress-bar { transition: width 0.5s ease-in-out; }
+        .card { border-radius: 1rem; }
+        .member-btn { transition: all 0.2s; }
+        .member-btn:active { transform: scale(0.95); }
+        .modal-overlay { background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); }
+        .loading-spinner { border: 3px solid #f3f3f3; border-top: 3px solid #06C755; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <!-- 讀取遮罩 -->
+    <div id="loadingOverlay" class="fixed inset-0 bg-white z-[200] flex flex-col items-center justify-center">
+        <div class="loading-spinner mb-4"></div>
+        <p class="text-gray-500 font-medium">連線雲端資料庫中...</p>
+    </div>
+
+    <div id="app" class="max-w-md mx-auto pb-10 hidden">
+        <!-- 標題區 -->
+        <div class="line-green text-white p-6 rounded-t-2xl shadow-lg text-center">
+            <h1 class="text-2xl font-bold italic tracking-wider">印卷加五制度管理</h1>
+            <p id="examTitle" class="text-sm opacity-90 mt-2 font-medium">114學年度第一學期第3次段考</p>
+        </div>
+
+        <!-- 登記點擊區域 -->
+        <div class="bg-white p-6 shadow-md card -mt-2">
+            <div class="flex justify-between items-center mb-5">
+                <h2 class="text-lg font-bold text-gray-800 flex items-center">
+                    <span class="w-2 h-6 line-green mr-2 rounded-full"></span>
+                    點選姓名 (+1)
+                </h2>
+                <div class="flex items-center space-x-2 bg-gray-50 px-3 py-1 rounded-full border border-gray-100">
+                    <span class="text-[10px] font-bold text-gray-500">大科模式</span>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="isLargeSubject" class="sr-only peer">
+                        <div class="w-10 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 固定人員按鈕 -->
+            <div class="grid grid-cols-3 gap-3 mb-6" id="memberGrid"></div>
+
+            <!-- 待命顯示區 -->
+            <div class="border-t border-dashed border-gray-200 pt-4">
+                <p class="text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest text-center">目前待命隊列</p>
+                <div id="currentQueue" class="bg-gray-50 rounded-xl p-4 min-h-[60px]"></div>
+            </div>
+        </div>
+
+        <!-- 個人累計與明細 -->
+        <div class="mt-6 bg-white p-6 shadow-md card border-t-4 border-blue-500">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-bold text-gray-800">個人累計與明細</h2>
+                <button onclick="exportToCSV()" class="text-[10px] bg-gray-800 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-black transition-colors flex items-center">
+                    <span class="mr-1">📥</span> 導出 CSV
+                </button>
+            </div>
+            <div id="statistics" class="space-y-3"></div>
+        </div>
+
+        <!-- 歷史總紀錄 -->
+        <div class="mt-6 bg-white p-6 shadow-md card border-t-4 border-green-500">
+            <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center">
+                <span class="mr-2">📋</span> 最新印製紀錄 (全體)
+            </h2>
+            <div id="history" class="space-y-4 max-h-[300px] overflow-y-auto pr-1"></div>
+        </div>
+
+        <!-- 管理功能 -->
+        <div class="mt-8 flex flex-col items-center space-y-4">
+            <button onclick="clearAllData()" class="text-xs text-gray-400 hover:text-red-500 transition-colors border-b border-gray-200 pb-1">
+                重置本次段考所有雲端數據
+            </button>
+        </div>
+    </div>
+
+    <!-- 日期確認彈窗 -->
+    <div id="dateModal" class="fixed inset-0 modal-overlay hidden flex items-center justify-center z-[100] p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100">
+            <div class="line-green p-4 text-white font-bold text-center">確認印製日期</div>
+            <div class="p-6">
+                <p class="text-sm text-gray-600 mb-4 text-center">小組已集滿！請選擇本次印製日期：</p>
+                <input type="date" id="manualDate" class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-green-500 outline-none mb-4 font-bold text-lg text-center">
+                <div class="flex space-x-3">
+                    <button id="cancelBtn" class="flex-1 py-3 bg-gray-100 text-gray-500 rounded-xl font-bold hover:bg-gray-200 transition-colors">取消</button>
+                    <button id="confirmBtn" class="flex-1 py-3 line-green text-white rounded-xl font-bold hover:opacity-90 transition-colors">確認存檔</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Firebase 雲端初始化 ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const auth = firebase.auth();
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'printing-system-v6';
+
+        const STAFF_LIST = ["珮萍", "美齡", "素子", "秋香", "佩璇", "湘玲", "素欣"];
+        const CURRENT_EXAM = "114學年度第一學期第3次段考";
+
+        let globalState = {
+            currentQueue: [],
+            stats: {},
+            history: []
+        };
+        let expandedMember = null;
+        let isProcessing = false;
+
+        async function init() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await auth.signInWithCustomToken(__initial_auth_token);
+                } else {
+                    await auth.signInAnonymously();
+                }
+                setupRealtimeSync();
+                renderMemberButtons();
+                document.getElementById('loadingOverlay').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+            } catch (error) {
+                console.error("連線錯誤:", error);
+                alert("連線資料庫失敗，請重新整理。");
+            }
+        }
+
+        function setupRealtimeSync() {
+            db.collection('artifacts').doc(appId).collection('public').doc('data')
+                .onSnapshot((doc) => {
+                    if (doc.exists) {
+                        globalState = doc.data();
+                        updateUI();
+                    } else {
+                        resetCloudData();
+                    }
+                });
+        }
+
+        async function resetCloudData() {
+            const initial = { examName: CURRENT_EXAM, currentQueue: [], stats: {}, history: [] };
+            await db.collection('artifacts').doc(appId).collection('public').doc('data').set(initial);
+        }
+
+        function renderMemberButtons() {
+            const grid = document.getElementById('memberGrid');
+            grid.innerHTML = STAFF_LIST.map(name => `
+                <button onclick="handlePlusOne('${name}')" id="btn-${name}"
+                        class="member-btn py-3 px-2 rounded-xl border-2 border-gray-100 bg-white text-gray-700 font-bold text-sm shadow-sm">
+                    ${name}
+                </button>
+            `).join('');
+        }
+
+        async function handlePlusOne(name) {
+            if (isProcessing) return;
+            const isLarge = document.getElementById('isLargeSubject').checked;
+            const targetSize = isLarge ? 4 : 3;
+
+            if (globalState.currentQueue.includes(name)) {
+                showToast(`${name} 已在排隊`);
+                return;
+            }
+
+            isProcessing = true;
+            const newQueue = [...globalState.currentQueue, name];
+
+            if (newQueue.length >= targetSize) {
+                openDateModal(newQueue, isLarge);
+            } else {
+                await updateCloud({ currentQueue: newQueue });
+                showToast(`${name} 登記成功`);
+                isProcessing = false;
+            }
+        }
+
+        function openDateModal(tempQueue, isLarge) {
+            const modal = document.getElementById('dateModal');
+            const dateInput = document.getElementById('manualDate');
+            dateInput.value = new Date().toISOString().split('T')[0];
+            modal.classList.remove('hidden');
+
+            document.getElementById('confirmBtn').onclick = async () => {
+                const date = dateInput.value;
+                if (!date) return;
+
+                const newStats = { ...globalState.stats };
+                tempQueue.forEach(m => newStats[m] = (newStats[m] || 0) + 1);
+
+                const newHistory = [{
+                    date: date.replace(/-/g, '/'),
+                    time: new Date().toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+                    members: tempQueue,
+                    type: isLarge ? "大科" : "小科"
+                }, ...globalState.history].slice(0, 100);
+
+                await updateCloud({ currentQueue: [], stats: newStats, history: newHistory });
+                modal.classList.add('hidden');
+                showToast("雲端更新成功！");
+                isProcessing = false;
+            };
+
+            document.getElementById('cancelBtn').onclick = () => {
+                modal.classList.add('hidden');
+                isProcessing = false;
+            };
+        }
+
+        async function updateCloud(data) {
+            try { await db.collection('artifacts').doc(appId).collection('public').doc('data').update(data); } catch (e) { showToast("同步失敗"); }
+        }
+
+        // 導出 CSV 功能
+        function exportToCSV() {
+            let csvContent = "\uFEFF姓名,總次數,印製日期明細\n"; // 加入 BOM 避免 Excel 開啟中文亂碼
+            
+            STAFF_LIST.forEach(name => {
+                const count = globalState.stats[name] || 0;
+                const dates = globalState.history
+                    .filter(h => h.members.includes(name))
+                    .map(h => `${h.date}(${itemTypeMap(h.type)})`)
+                    .join('；');
+                csvContent += `${name},${count},"${dates}"\n`;
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", `印卷統計_${new Date().toLocaleDateString()}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function itemTypeMap(type) { return type === "大科" ? "大" : "小"; }
+
+        async function clearAllData() {
+            if (confirm("這將會清除雲端所有數據。確定要重置嗎？")) { await resetCloudData(); showToast("數據已清空"); }
+        }
+
+        function toggleExpand(name) {
+            expandedMember = (expandedMember === name) ? null : name;
+            updateUI();
+        }
+
+        function updateUI() {
+            const isLarge = document.getElementById('isLargeSubject').checked;
+            const targetSize = isLarge ? 4 : 3;
+
+            STAFF_LIST.forEach(name => {
+                const btn = document.getElementById(`btn-${name}`);
+                if (!btn) return;
+                btn.className = globalState.currentQueue.includes(name) 
+                    ? "member-btn py-3 px-2 rounded-xl border-2 border-green-500 bg-green-500 text-white font-bold text-sm shadow-sm"
+                    : "member-btn py-3 px-2 rounded-xl border-2 border-gray-100 bg-white text-gray-700 font-bold text-sm shadow-sm hover:border-green-400";
+            });
+
+            const qBox = document.getElementById('currentQueue');
+            qBox.innerHTML = globalState.currentQueue.length === 0 
+                ? `<p class="text-sm text-gray-400 text-center py-2">目前無人待命</p>`
+                : `<div class="flex flex-wrap gap-2 justify-center">${globalState.currentQueue.map(name => `<span class="text-sm font-bold text-green-600">👤 ${name}</span>`).join('<span class="text-gray-300">|</span>')}</div><div class="mt-2 text-center text-[10px] text-blue-500 font-bold">同步進度: ${globalState.currentQueue.length} / ${targetSize}</div>`;
+
+            const sBox = document.getElementById('statistics');
+            const sortedNames = [...STAFF_LIST].sort((a,b) => (globalState.stats[b] || 0) - (globalState.stats[a] || 0));
+            sBox.innerHTML = sortedNames.map(name => {
+                const count = globalState.stats[name] || 0;
+                const isExpanded = expandedMember === name;
+                const userDates = globalState.history.filter(h => h.members.includes(name)).map(h => `<div class="flex justify-between py-1 border-b border-white/50"><span>📅 ${h.date}</span><span class="opacity-60">[${h.type}]</span></div>`).join('');
+                return `<div class="border border-gray-100 rounded-xl overflow-hidden shadow-sm"><button onclick="toggleExpand('${name}')" class="w-full text-left p-3 bg-white hover:bg-gray-50 transition-colors"><div class="flex justify-between items-center mb-1"><span class="font-bold text-gray-800">${name} ${count >= 5 ? '🏆' : ''}</span><div class="flex items-center space-x-2"><span class="font-mono text-gray-500 text-xs">${count} / 5</span><span class="text-gray-300 transform transition-transform ${isExpanded ? 'rotate-180' : ''}">▼</span></div></div><div class="w-full bg-gray-100 rounded-full h-1.5"><div class="progress-bar ${count >= 5 ? 'bg-green-500' : 'bg-blue-400'} h-full rounded-full" style="width: ${Math.min((count/5)*100, 100)}%"></div></div></button>${isExpanded ? `<div class="bg-blue-50/50 p-3 text-[11px] text-gray-600 space-y-1 animate-fadeIn">${userDates || '<p class="italic">尚無日期紀錄</p>'}</div>` : ''}</div>`;
+            }).join('');
+
+            const hBox = document.getElementById('history');
+            hBox.innerHTML = globalState.history.length === 0 
+                ? `<p class="text-sm text-gray-400 text-center py-4">目前尚無紀錄</p>`
+                : globalState.history.map(item => `<div class="bg-gray-50 border border-gray-100 rounded-lg p-2 text-xs"><div class="flex justify-between font-mono text-gray-500 mb-1"><span>${item.date}</span><span class="bg-white px-1 rounded border border-gray-200">${item.type}</span></div><div class="text-gray-800"><span class="font-bold">成員:</span> ${item.members.join('、')}</div></div>`).join('');
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'fixed top-5 left-1/2 -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-2xl text-sm z-[300] shadow-xl transition-all';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 2000);
+        }
+
+        init();
+    </script>
+</body>
+</html>
